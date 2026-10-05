@@ -1,0 +1,17 @@
+{
+  "name": "@errand/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/main.tsx --outdir ../relay/public --minify && cp src/index.html src/styles.css src/manifest.webmanifest ../relay/public/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@errand/protocol": "workspace:*",
+    "preact": "^10.24.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

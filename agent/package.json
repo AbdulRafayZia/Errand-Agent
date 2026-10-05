@@ -1,0 +1,24 @@
+{
+  "name": "@errand/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "pair": "bun src/main.ts --pair",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "latest",
+    "@anthropic-ai/sdk": "^0.131.0",
+    "@errand/protocol": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "qrcode-terminal": "^0.12.0",
+    "zod": "^4"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/qrcode-terminal": "^0.12.2",
+    "typescript": "^5.6.0"
+  }
+}

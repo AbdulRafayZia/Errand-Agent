@@ -1,0 +1,20 @@
+{
+  "name": "errand",
+  "private": true,
+  "workspaces": [
+    "protocol",
+    "agent",
+    "relay",
+    "web"
+  ],
+  "scripts": {
+    "build:web": "cd web && bun run build",
+    "relay": "bun run build:web && cd relay && npx wrangler dev --ip 0.0.0.0 --port 8787",
+    "agent": "cd agent && bun src/main.ts",
+    "pair": "cd agent && bun src/main.ts --pair",
+    "deploy:relay": "bun run build:web && cd relay && npx wrangler deploy",
+    "typecheck": "cd agent && bunx tsc --noEmit && cd ../relay && bunx tsc --noEmit && cd ../web && bunx tsc --noEmit",
+    "devices": "cd agent && bun src/main.ts --devices",
+    "revoke": "cd agent && bun src/main.ts --revoke"
+  }
+}

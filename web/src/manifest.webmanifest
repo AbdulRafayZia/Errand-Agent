@@ -1,0 +1,8 @@
+{
+  "name": "Errand",
+  "short_name": "Errand",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F5F3EE",
+  "theme_color": "#F5F3EE"
+}
