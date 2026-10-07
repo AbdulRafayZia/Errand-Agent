@@ -105,6 +105,14 @@ export interface MacStatus {
   allowedFolders: string[];
   model: string;
   version: string;
+  /** VAPID public key the phone subscribes to web push with. */
+  pushKey: string;
+}
+
+/** A browser PushSubscription, as `subscription.toJSON()` returns it. */
+export interface PushSubscriptionJSON {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
 }
 
 export type PhoneToMac =
@@ -114,13 +122,26 @@ export type PhoneToMac =
   | { type: "task.stop"; taskId: string }
   | { type: "approval.respond"; approvalId: string; decision: "approve" | "deny"; remember?: boolean }
   | { type: "agent.pause"; paused: boolean }
-  | { type: "stop.all" };
+  | { type: "stop.all" }
+  | { type: "push.subscribe"; subscription: PushSubscriptionJSON }
+  | { type: "push.unsubscribe" }
+  | { type: "push.test" };
+
+/** What the Mac puts in a push notification. Encrypted end to end to the phone (RFC 8291). */
+export interface PushPayload {
+  title: string;
+  body: string;
+  /** Where tapping the notification goes, e.g. "/?approval=abc". */
+  url: string;
+  /** Notifications with the same tag replace each other. */
+  tag: string;
+}
 
 export type MacToPhone =
   /** The Mac is waiting for its owner to approve this phone with Touch ID or the login password. */
   | { type: "pair.pending" }
   | { type: "paired"; macName: string }
-  | { type: "state"; mac: MacStatus; tasks: Task[]; approvals: Approval[] }
+  | { type: "state"; mac: MacStatus; tasks: Task[]; approvals: Approval[]; pushSubscribed: boolean }
   | { type: "task"; task: Task }
   | { type: "approval"; approval: Approval }
   | { type: "approval.resolved"; approvalId: string }

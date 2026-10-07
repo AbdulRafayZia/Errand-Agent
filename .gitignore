@@ -3,3 +3,8 @@ node_modules/
 relay/public/
 .env
 .DS_Store
+ios/ErrandKit/.build/
+ios/ErrandKit/.swiftpm/
+ios/Errand.xcodeproj/
+ios/Errand/Info.plist
+DerivedData/

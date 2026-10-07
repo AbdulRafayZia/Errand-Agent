@@ -4,11 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "bun build src/main.tsx --outdir ../relay/public --minify && cp src/index.html src/styles.css src/manifest.webmanifest ../relay/public/",
-    "typecheck": "tsc --noEmit"
+    "build": "bun build src/main.tsx --outdir ../relay/public --minify && cp src/index.html src/styles.css src/manifest.webmanifest src/sw.js public-static/*.png ../relay/public/",
+    "typecheck": "tsc --noEmit",
+    "icons": "bun scripts/make-icons.ts"
   },
   "dependencies": {
     "@errand/protocol": "workspace:*",
+    "jsqr": "^1.4.0",
     "preact": "^10.24.0"
   },
   "devDependencies": {

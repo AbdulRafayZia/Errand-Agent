@@ -15,11 +15,14 @@ import {
   type MacToPhone,
   type PairingPayload,
   type PhoneToMac,
+  type PushPayload,
 } from "@errand/protocol";
-import { watchFile } from "node:fs";
-import { CONFIG_PATH, loadConfig, readSavedPhones, saveConfig } from "./config";
+import { readdirSync, watchFile } from "node:fs";
+import { CONFIG_PATH, loadConfig, readSavedConfig, saveConfig } from "./config";
+import { claimPidFile, runningAgentPid } from "./pidfile";
 import { batteryStatus } from "./mac-tools";
 import { confirmOwner, notifyMac, prepareOwnerAuth } from "./owner-auth";
+import { ensureVapidKeys, isValidSubscription, sendPush } from "./push";
 import { TaskManager } from "./tasks";
 
 const VERSION = "0.1.0";
@@ -27,6 +30,7 @@ const PAIRING_WINDOW_MS = 10 * 60 * 1000;
 
 const args = new Set(process.argv.slice(2));
 const config = loadConfig();
+ensureVapidKeys(config);
 const sessionKeys = new Map<string, Uint8Array>();
 const onlinePhones = new Set<string>();
 let socket: WebSocket | undefined;
@@ -155,11 +159,56 @@ async function macStatus(): Promise<MacStatus> {
     allowedFolders: config.allowedFolders,
     model: config.model,
     version: VERSION,
+    pushKey: config.vapid!.publicKey,
   };
 }
 
 async function sendState(kid: string) {
-  sendTo(kid, { type: "state", mac: await macStatus(), tasks: tasks.tasks.slice(0, 50), approvals: tasks.approvals });
+  const pushSubscribed = !!config.phones.find((p) => p.kid === kid)?.push;
+  sendTo(kid, { type: "state", mac: await macStatus(), tasks: tasks.tasks.slice(0, 50), approvals: tasks.approvals, pushSubscribed });
+}
+
+// --- Push notifications ----------------------------------------------------
+
+/** Notifies phones that aren't looking at the app right now (open apps get live updates instead). */
+async function notifyPhones(payload: PushPayload, opts: { includeOnline?: boolean; only?: string } = {}) {
+  for (const phone of [...config.phones]) {
+    if (!phone.push) continue;
+    if (opts.only && phone.kid !== opts.only) continue;
+    if (!opts.includeOnline && onlinePhones.has(phone.kid)) continue;
+    const alive = await sendPush(config, phone.push, payload);
+    if (!alive) {
+      phone.push = undefined;
+      saveConfig(config);
+      log(`Push subscription for ${phone.name} expired.`);
+    }
+  }
+}
+
+const notifiedTaskEnds = new Map<string, number>();
+
+function pushFor(message: MacToPhone) {
+  if (message.type === "approval") {
+    const task = tasks.tasks.find((t) => t.id === message.approval.taskId);
+    void notifyPhones({
+      title: message.approval.title,
+      body: task ? `Waiting on you · ${task.prompt.slice(0, 100)}` : message.approval.reason,
+      url: `/?approval=${message.approval.id}`,
+      tag: `approval-${message.approval.id}`,
+    });
+  } else if (message.type === "task" && ["done", "failed"].includes(message.task.status)) {
+    // One notification per finish (a follow-up can finish the same task again later).
+    const { task } = message;
+    if (notifiedTaskEnds.get(task.id) === task.updatedAt) return;
+    notifiedTaskEnds.set(task.id, task.updatedAt);
+    const outcome = task.status === "done" ? task.result : task.error;
+    void notifyPhones({
+      title: task.status === "done" ? "Done" : "Couldn't finish",
+      body: `${task.prompt.slice(0, 60)}${outcome ? ` — ${outcome.replace(/\s+/g, " ").slice(0, 120)}` : ""}`,
+      url: `/?task=${task.id}`,
+      tag: `task-${task.id}`,
+    });
+  }
 }
 
 function handleMessage(kid: string, message: PhoneToMac) {
@@ -183,6 +232,29 @@ function handleMessage(kid: string, message: PhoneToMac) {
     case "stop.all":
       log("Stop everything pressed on phone.");
       return tasks.stopAll();
+    case "push.subscribe": {
+      const phone = config.phones.find((p) => p.kid === kid);
+      if (!phone) return;
+      if (!isValidSubscription(message.subscription)) {
+        return sendTo(kid, { type: "error", message: "That notification subscription isn't from a known push service." });
+      }
+      phone.push = { endpoint: message.subscription.endpoint, keys: message.subscription.keys };
+      saveConfig(config);
+      log(`Notifications turned on for ${phone.name}.`);
+      return void sendState(kid);
+    }
+    case "push.unsubscribe": {
+      const phone = config.phones.find((p) => p.kid === kid);
+      if (!phone) return;
+      phone.push = undefined;
+      saveConfig(config);
+      return void sendState(kid);
+    }
+    case "push.test":
+      return void notifyPhones(
+        { title: "Errand", body: `Notifications from ${config.macName} are working.`, url: "/", tag: "test" },
+        { includeOnline: true, only: kid },
+      );
   }
 }
 
@@ -245,6 +317,7 @@ const tasks = new TaskManager(
       log(`Task ${message.task.status}: ${message.task.prompt.slice(0, 60)}`);
     }
     broadcast(message);
+    pushFor(message);
   },
   () => void macStatus().then((mac) => broadcast({ type: "mac", mac })),
 );
@@ -273,11 +346,37 @@ if (args.has("--devices") || args.has("--revoke")) {
   process.exit(0);
 }
 
-// Pick up revocations made from another terminal while the agent runs.
+// --- One agent at a time ------------------------------------------------------
+
+const otherAgent = runningAgentPid();
+if (otherAgent) {
+  if (args.has("--pair")) {
+    // Hand the pairing to the agent that's already running (usually the background service):
+    // write a fresh code to the config, which it picks up within a couple of seconds.
+    showPairingCode();
+    console.log("Errand is already running, so it will handle this pairing.");
+    console.log("When the phone scans the code, approve it with Touch ID on this Mac.");
+    process.exit(0);
+  }
+  console.log(`Errand is already running (pid ${otherAgent}). See it with \`bun run status\` or \`bun run logs\`.`);
+  console.log("To run it in this terminal instead, stop the background one first: `bun run stop`.");
+  process.exit(1);
+}
+claimPidFile();
+
+// Pick up changes made from another terminal while the agent runs: revoked phones
+// and new pairing codes from `bun run pair`.
 watchFile(CONFIG_PATH, { interval: 2000 }, () => {
-  const saved = new Set(readSavedPhones().map((p) => p.kid));
+  const saved = readSavedConfig();
+  if (!saved) return;
+  if (saved.pairSecret && saved.pairSecret !== config.pairSecret) {
+    config.pairSecret = saved.pairSecret;
+    config.pairSecretExpiresAt = saved.pairSecretExpiresAt;
+    log("A new pairing code is ready. Waiting for a phone to scan it.");
+  }
+  const savedKids = new Set(saved.phones.map((p) => p.kid));
   for (const phone of [...config.phones]) {
-    if (saved.has(phone.kid)) continue;
+    if (savedKids.has(phone.kid)) continue;
     config.phones = config.phones.filter((p) => p.kid !== phone.kid);
     sessionKeys.delete(phone.kid);
     onlinePhones.delete(phone.kid);
@@ -290,20 +389,39 @@ watchFile(CONFIG_PATH, { interval: 2000 }, () => {
 void prepareOwnerAuth();
 
 if (config.keepAwake) {
-  // Keep the Mac from idle-sleeping while the agent runs; exits with this process.
-  Bun.spawn(["caffeinate", "-i", "-w", String(process.pid)], { stdout: "ignore", stderr: "ignore" });
+  // Stop the Mac sleeping while it's plugged in (-s applies on AC power only), so a
+  // Mac on battery still sleeps normally. Exits with this process.
+  Bun.spawn(["caffeinate", "-s", "-w", String(process.pid)], { stdout: "ignore", stderr: "ignore" });
 }
 
-console.log(`Errand ${VERSION} on "${config.macName}" · model ${config.model}`);
+const asService = args.has("--service");
+console.log(`Errand ${VERSION} on "${config.macName}" · model ${config.model}${asService ? " · background service" : ""}`);
 console.log(`Allowed folders: ${config.allowedFolders.join(", ") || "(none)"}`);
-if (args.has("--pair") || config.phones.length === 0) showPairingCode();
-else console.log(`Paired phones: ${config.phones.map((p) => p.name).join(", ")}. Run \`bun run pair\` to add another.`);
+
+if (asService) {
+  // macOS asks once per folder whether the agent may use Documents, Desktop and Downloads.
+  // Ask now, right after install while someone is at the Mac, not mid-task later.
+  for (const folder of config.allowedFolders) {
+    try {
+      readdirSync(folder);
+    } catch {
+      log(`Can't read ${folder} yet. If macOS asked for access, click Allow.`);
+    }
+  }
+  if (config.phones.length === 0) log("No phones paired yet. Run `bun run pair` in a terminal to show a pairing code.");
+} else if (args.has("--pair") || config.phones.length === 0) {
+  showPairingCode();
+} else {
+  console.log(`Paired phones: ${config.phones.map((p) => p.name).join(", ")}. Run \`bun run pair\` to add another.`);
+}
 
 connect();
 
-process.on("SIGINT", () => {
-  log("Shutting down.");
-  tasks.stopAll();
-  socket?.close();
-  setTimeout(() => process.exit(0), 300);
-});
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    log("Shutting down.");
+    tasks.stopAll();
+    socket?.close();
+    setTimeout(() => process.exit(0), 300);
+  });
+}

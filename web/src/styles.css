@@ -192,3 +192,11 @@ h3 { font-size: 13px; font-weight: 600; color: var(--ink-2); margin-top: 6px; }
 /* Pairing confirmation */
 .code-box { font-family: "Geist Mono", ui-monospace, monospace; font-size: 44px; font-weight: 500; letter-spacing: 0.08em; text-align: center; padding: 28px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 20px; }
 .pip-wait { background: var(--amber-ink); }
+
+/* QR scanner */
+.scanner { display: flex; flex-direction: column; gap: 14px; }
+.scanner-view { position: relative; aspect-ratio: 1; border-radius: 24px; overflow: hidden; background: var(--ink); }
+.scanner-view video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.scanner-frame { position: absolute; inset: 18%; border: 3px solid #7FD1A0; border-radius: 16px; }
+.scanner-hint { position: absolute; left: 0; right: 0; bottom: 14px; text-align: center; color: #EDEBE4; font-size: 13px; }
+.set-link { border: 0; background: none; width: 100%; text-align: left; color: var(--green); font-weight: 500; }

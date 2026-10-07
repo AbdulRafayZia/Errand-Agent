@@ -15,6 +15,15 @@
     "deploy:relay": "bun run build:web && cd relay && npx wrangler deploy",
     "typecheck": "cd agent && bunx tsc --noEmit && cd ../relay && bunx tsc --noEmit && cd ../web && bunx tsc --noEmit",
     "devices": "cd agent && bun src/main.ts --devices",
-    "revoke": "cd agent && bun src/main.ts --revoke"
+    "revoke": "cd agent && bun src/main.ts --revoke",
+    "install-service": "cd agent && bun src/service.ts install",
+    "uninstall-service": "cd agent && bun src/service.ts uninstall",
+    "start": "cd agent && bun src/service.ts start",
+    "stop": "cd agent && bun src/service.ts stop",
+    "restart": "cd agent && bun src/service.ts restart",
+    "status": "cd agent && bun src/service.ts status",
+    "logs": "cd agent && bun src/service.ts logs",
+    "ios:check": "cd ios/ErrandKit && swift build && cd ../.. && bun ios/scripts/interop.ts gen /tmp/errand-vectors.json && ios/ErrandKit/.build/debug/InteropCheck /tmp/errand-vectors.json /tmp/errand-reply.json && bun ios/scripts/interop.ts verify /tmp/errand-vectors.json /tmp/errand-reply.json",
+    "ios:project": "cd ios && xcodegen generate"
   }
 }

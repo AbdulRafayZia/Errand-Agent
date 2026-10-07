@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { pairingCode, type Approval, type MacStatus, type MacToPhone, type Task } from "@errand/protocol";
 import { Connection, loadPairing, pairingFromLink, savePairing, type LinkStatus, type Pairing } from "./conn";
 import { Icon, type IconName } from "./icons";
+import { isStandalone, pushSupport, registerServiceWorker, subscribe, unsubscribe } from "./push";
+import { canScan, QrScanner } from "./scanner";
 
 type View =
   | { name: "home" }
@@ -91,6 +93,43 @@ function App() {
   const [view, setView] = useState<View>({ name: "home" });
   const [approvalOpen, setApprovalOpen] = useState<string>();
   const [toast, setToast] = useState<string>();
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  // Screen to open once data arrives, from a tapped notification (?task= / ?approval=).
+  const [deepLink, setDeepLink] = useState<URLSearchParams | undefined>(() => {
+    const params = new URLSearchParams(location.search);
+    if (!params.has("task") && !params.has("approval")) return undefined;
+    history.replaceState(null, "", location.pathname + location.hash);
+    return params;
+  });
+
+  useEffect(() => {
+    void registerServiceWorker();
+    const onWorkerMessage = (event: MessageEvent) => {
+      if (event.data?.type === "open") setDeepLink(new URL(event.data.url, location.origin).searchParams);
+    };
+    navigator.serviceWorker?.addEventListener("message", onWorkerMessage);
+    return () => navigator.serviceWorker?.removeEventListener("message", onWorkerMessage);
+  }, []);
+
+  useEffect(() => {
+    if (!deepLink) return;
+    const taskId = deepLink.get("task");
+    const approvalId = deepLink.get("approval");
+    if (approvalId) {
+      // An approval that was already decided is simply gone; open its task instead.
+      const pending = approvals.find((a) => a.id === approvalId);
+      if (pending) {
+        setApprovalOpen(pending.id);
+        setView({ name: "task", id: pending.taskId });
+        setDeepLink(undefined);
+      } else if (tasks.length) {
+        setDeepLink(undefined);
+      }
+    } else if (taskId && tasks.some((t) => t.id === taskId)) {
+      setView({ name: "task", id: taskId });
+      setDeepLink(undefined);
+    }
+  }, [deepLink, tasks, approvals]);
   const conn = useRef<Connection>();
 
   // A pairing link opened while the app is already loaded only changes the hash.
@@ -126,6 +165,7 @@ function App() {
             setMac(message.mac);
             setTasks(message.tasks);
             setApprovals(message.approvals);
+            setPushSubscribed(message.pushSubscribed);
             break;
           case "mac":
             setMac(message.mac);
@@ -238,6 +278,7 @@ function App() {
         <Settings
           mac={mac}
           macName={pairing.macName}
+          pushSubscribed={pushSubscribed}
           send={send}
           onUnpair={() => {
             conn.current?.stop();
@@ -273,18 +314,45 @@ function App() {
 function PairScreen({ error, onPair }: { error?: string; onPair: (p: Pairing) => void }) {
   const [text, setText] = useState("");
   const [bad, setBad] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const inApp = isStandalone();
+
+  if (scanning) {
+    return (
+      <div class="screen pair">
+        <Brand />
+        <h1>Scan the code</h1>
+        <QrScanner
+          onClose={() => setScanning(false)}
+          onResult={(value) => {
+            setScanning(false);
+            const p = pairingFromLink(value);
+            if (p) onPair(p);
+            else setBad(true);
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div class="screen pair">
       <Brand />
       <h1>Pair your Mac</h1>
       <p class="muted">
-        On your Mac, run <code>bun run pair</code> in the Errand agent folder. Then scan the QR code with your iPhone camera.
+        On your Mac, run <code>bun run pair</code> in the Errand folder. It shows a QR code{inApp ? " to scan here." : " to scan with your iPhone camera."}
       </p>
       {error && <div class="banner banner-bad">{error}</div>}
+      {bad && <div class="banner banner-bad">That QR code isn't an Errand pairing code.</div>}
+      {canScan() && (
+        <button class="btn btn-primary" onClick={() => { setBad(false); setScanning(true); }}>
+          Scan QR code
+        </button>
+      )}
       <ol class="steps-list">
         <li><span>1</span>Start the Errand agent on your Mac</li>
         <li><span>2</span>Scan the QR code it shows</li>
-        <li><span>3</span>This page opens already paired</li>
+        <li><span>3</span>Approve with Touch ID on the Mac</li>
       </ol>
       <form
         class="stack"
@@ -746,12 +814,70 @@ function Activity({ tasks, onOpenTask }: { tasks: Task[]; onOpenTask: (id: strin
   );
 }
 
-function Settings(props: { mac?: MacStatus; macName: string; send: Connection["send"]; onUnpair: () => void }) {
+function NotificationSettings(props: { mac?: MacStatus; subscribed: boolean; send: Connection["send"] }) {
+  const support = pushSupport();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const toggle = async () => {
+    if (!props.mac) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      if (props.subscribed) {
+        await unsubscribe();
+        props.send({ type: "push.unsubscribe" });
+      } else {
+        const subscription = await subscribe(props.mac.pushKey);
+        props.send({ type: "push.subscribe", subscription });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't turn on notifications.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const hint =
+    support === "needs-home-screen"
+      ? "To get notifications on iPhone, add Errand to your Home Screen: tap Share, then Add to Home Screen, and open it from there."
+      : support === "needs-https"
+        ? "Notifications need the online relay (an https:// address). See “Use it away from home” in the README."
+        : support === "unsupported"
+          ? "This browser doesn't support notifications."
+          : "Get a notification when your Mac needs approval or finishes a task while Errand is closed.";
+
+  return (
+    <>
+      <h3>Notifications</h3>
+      <div class="card list">
+        <div class="set-row">
+          <span class="grow">Approvals and finished tasks</span>
+          <button
+            role="switch"
+            aria-checked={props.subscribed}
+            aria-label="Notifications"
+            class={`switch ${props.subscribed ? "switch-on" : ""}`}
+            disabled={support !== "ok" || !props.mac || busy}
+            onClick={toggle}
+          ><span /></button>
+        </div>
+        {props.subscribed && (
+          <button class="set-row set-link" onClick={() => props.send({ type: "push.test" })}>Send a test notification</button>
+        )}
+      </div>
+      {error ? <p class="hint error-text">{error}</p> : <p class="hint">{hint}</p>}
+    </>
+  );
+}
+
+function Settings(props: { mac?: MacStatus; macName: string; pushSubscribed: boolean; send: Connection["send"]; onUnpair: () => void }) {
   const { mac } = props;
   return (
     <>
       <header class="page-head"><h1>Settings</h1></header>
       <main class="screen-body">
+        <NotificationSettings mac={mac} subscribed={props.pushSubscribed} send={props.send} />
         <h3>This Mac</h3>
         <div class="card list">
           <div class="set-row"><span class="grow">Name</span><span class="muted">{mac?.name ?? props.macName}</span></div>

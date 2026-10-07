@@ -79,6 +79,7 @@ export class Connection {
   private retryMs = 1000;
   private pingTimer?: ReturnType<typeof setInterval>;
   private stopped = false;
+  private suspended = false;
 
   constructor(
     private pairing: Pairing,
@@ -109,8 +110,15 @@ export class Connection {
   }
 
   private onVisible = () => {
-    // iOS suspends sockets in the background; reconnect as soon as the app is back.
-    if (document.visibilityState !== "visible" || this.stopped) return;
+    if (this.stopped) return;
+    // Disconnect when the app goes to the background. The Mac then knows to send
+    // push notifications instead of live updates, and the phone saves battery.
+    if (document.visibilityState === "hidden") {
+      this.suspended = true;
+      this.ws?.close();
+      return;
+    }
+    this.suspended = false;
     if (!this.ws || this.ws.readyState === WebSocket.CLOSED || this.ws.readyState === WebSocket.CLOSING) {
       this.retryMs = 1000;
       this.connect();
@@ -144,7 +152,7 @@ export class Connection {
     ws.addEventListener("message", (event) => this.handle(String(event.data)));
     ws.addEventListener("close", () => {
       clearInterval(this.pingTimer);
-      if (this.ws !== ws || this.stopped) return;
+      if (this.ws !== ws || this.stopped || this.suspended) return;
       this.onStatus("offline");
       setTimeout(() => this.ws === ws && !this.stopped && this.connect(), this.retryMs);
       this.retryMs = Math.min(this.retryMs * 2, 15_000);

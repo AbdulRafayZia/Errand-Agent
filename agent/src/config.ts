@@ -2,17 +2,19 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "n
 import { homedir, networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { generateKeyPair, keyId, randomId, type KeyPair } from "@errand/protocol";
+import { generateKeyPair, keyId, randomId, type KeyPair, type PushSubscriptionJSON } from "@errand/protocol";
 
 export const DATA_DIR = process.env.ERRAND_HOME ?? join(homedir(), ".errand");
 export const CONFIG_PATH = join(DATA_DIR, "config.json");
 
-/** Paired phones as currently saved on disk (picks up revocations made from another terminal). */
-export function readSavedPhones(): PairedPhone[] {
+/** The config as currently saved on disk, to pick up changes made from another terminal. */
+export function readSavedConfig(): Config | undefined {
   try {
-    return (JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Config).phones ?? [];
+    const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Config;
+    saved.phones ??= [];
+    return saved;
   } catch {
-    return [];
+    return undefined;
   }
 }
 
@@ -21,6 +23,7 @@ export interface PairedPhone {
   publicKey: string;
   name: string;
   pairedAt: number;
+  push?: PushSubscriptionJSON;
 }
 
 export interface Config {
@@ -37,6 +40,8 @@ export interface Config {
   model: string;
   keepAwake: boolean;
   remembered: { emailRecipients: string[] };
+  /** Keys this Mac signs web push requests with. */
+  vapid?: { publicKey: string; privateKey: string };
 }
 
 function macName(): string {
